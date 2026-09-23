@@ -1,0 +1,11 @@
+# Starfall backend runtime dependencies
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30,<1
+psycopg2-binary>=2.9.10,<3
+python-dotenv>=1,<2
+PyJWT>=2.8,<3
+passlib[bcrypt]>=1.7.4,<2
+# bcrypt 5 is incompatible with passlib 1.7.x.
+bcrypt>=4.0.1,<5
+slowapi>=0.1.9,<1
+email-validator>=2.2,<3
