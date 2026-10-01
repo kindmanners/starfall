@@ -3,261 +3,58 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Starfall</title>
-    <link rel="stylesheet" href="chat/style.css">
+    <title>Starfall Chat</title>
+    <link rel="stylesheet" href="/assets/chat/style.css">
 </head>
 <body>
     <div class="starfall-bg" id="starfallBg"></div>
-
-    <div class="container">
-        <!-- Sidebar -->
-        <div class="sidebar">
-            <div class="sidebar-header" onclick="toggleView()">
-                <div class="app-title">✦ Starfall</div>
+    <div class="app-container">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="server-icon">✦</div>
+                <div class="server-name">Starfall</div>
             </div>
-            <div class="channels-list" id="sidebarContent">
-                <!-- Channels View -->
-                <div id="channelsView">
-                    <div class="section-header">Text Channels</div>
-                    <div class="channel-item active" onclick="switchChannel(this, 'general')">
-                        <span class="channel-icon">#</span>
-                        <span class="channel-name">general</span>
-                    </div>
-                    <div class="channel-item" onclick="switchChannel(this, 'dev-chat')">
-                        <span class="channel-icon">#</span>
-                        <span class="channel-name">dev-chat</span>
-                        <span class="notification-badge">3</span>
-                    </div>
-                    <div class="channel-item" onclick="switchChannel(this, 'announcements')">
-                        <span class="channel-icon">#</span>
-                        <span class="channel-name">announcements</span>
-                    </div>
-                    <div class="channel-item" onclick="switchChannel(this, 'random')">
-                        <span class="channel-icon">#</span>
-                        <span class="channel-name">random</span>
-                    </div>
-                </div>
-
-                <!-- DMs View -->
-                <div id="dmsView" style="display: none;">
-                    <button class="add-friend-btn" onclick="openAddFriendModal()">
-                        <span>+</span>
-                        <span>Add Friend</span>
-                    </button>
-                    
-                    <div class="section-header">Direct Messages</div>
-                    <div class="dm-item" onclick="openDM(this, 'Utku', 'online')">
-                        <div class="dm-avatar online">A</div>
-                        <span class="dm-name">Utku</span>
-                        <span class="notification-badge">2</span>
-                    </div>
-                    <div class="dm-item" onclick="openDM(this, 'Shortie', 'online')">
-                        <div class="dm-avatar online">J</div>
-                        <span class="dm-name">Shortie</span>
-                    </div>
-                    <div class="dm-item" onclick="openDM(this, 'Merc', 'offline')">
-                        <div class="dm-avatar offline">T</div>
-                        <span class="dm-name">Merc</span>
-                    </div>
-
-                    <div class="section-header" style="margin-top: 24px;">Profile</div>
-                    <div class="dm-item" onclick="openProfileModal()">
-                        <div class="dm-avatar online">S</div>
-                        <span class="dm-name">Edit Profile</span>
-                    </div>
-                </div>
+            <div class="sidebar-content">
+                <div class="section-title">People</div>
+                <div id="peopleList" class="people-list"></div>
+                <div id="peopleEmpty" class="empty-sidebar hidden">When your friend signs up, they’ll appear here.</div>
             </div>
-        </div>
-
-        <!-- Chat Area -->
-        <div class="chat-area">
-            <!-- Server Chat View -->
-            <div class="view-container" id="serverView">
-                <div class="chat-header">
-                    <span class="channel-icon">#</span>
-                    <span class="chat-header-title" id="channelTitle">general</span>
-                    <div class="star-icon" onclick="toggleStar(this)">☆</div>
+            <div class="user-profile">
+                <div class="avatar" id="myAvatar">?</div>
+                <div class="user-info">
+                    <div class="username" id="myName">Loading…</div>
+                    <div class="status" id="connectionStatus">Connecting</div>
                 </div>
-
-                <div class="messages-container" id="serverMessages">
-                    <!-- Sample Messages -->
-                    <div class="message">
-                        <div class="avatar">A</div>
-                        <div class="message-content">
-                            <div class="message-header">
-                                <span class="username">Utku</span>
-                                <span class="timestamp">10:24 AM</span>
-                            </div>
-                            <div class="message-bubble">
-                                Hey everyone! Welcome to Starfall 
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="message">
-                        <div class="avatar">J</div>
-                        <div class="message-content">
-                            <div class="message-header">
-                                <span class="username">Shortie</span>
-                                <span class="timestamp">10:25 AM</span>
-                            </div>
-                            <div class="message-bubble">
-                                This looks amazing! Love the design
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="message own">
-                        <div class="avatar">S</div>
-                        <div class="message-content">
-                            <div class="message-header">
-                                <span class="username">You</span>
-                                <span class="timestamp">10:26 AM</span>
-                            </div>
-                            <div class="message-bubble">
-                                Thanks! Still working on some features
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="typing-indicator" id="serverTyping">
-                        <div class="typing-dots">
-                            <span></span>
-                            <span></span>
-                            <span></span>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="input-area">
-                    <div class="input-container">
-                        <button class="attachment-btn" onclick="handleAttachment()">📎</button>
-                        <input 
-                            type="text" 
-                            class="message-input" 
-                            placeholder="Message #general"
-                            id="serverInput"
-                            onkeypress="handleKeyPress(event, 'server')"
-                        />
-                        <button class="send-btn" onclick="sendMessage('server')">
-                            <span>Send</span>
-                            <span>→</span>
-                        </button>
-                    </div>
-                </div>
+                <button class="logout-btn" id="logoutButton" title="Sign out">↪</button>
             </div>
+        </aside>
 
-            <!-- DM Home View -->
-            <div class="view-container hidden" id="dmHomeView">
-                <div class="dm-home">
-                    <div class="dm-home-content">
-                        <div class="dm-home-icon">✦</div>
-                        <h2 class="dm-home-title">Welcome to Direct Messages</h2>
-                        <p class="dm-home-subtitle">Start a conversation with your friends or add new ones to your network</p>
-                        <button class="dm-home-btn" onclick="openAddFriendModal()">Add a Friend</button>
+        <main class="main-content">
+            <section id="welcomeView" class="welcome-view">
+                <div class="welcome-star">✦</div>
+                <h1>Your conversations</h1>
+                <p id="welcomeMessage">Choose someone from the left to start chatting.</p>
+            </section>
+
+            <section id="chatView" class="chat-view hidden">
+                <header class="chat-header">
+                    <div class="dm-avatar" id="chatAvatar">?</div>
+                    <div>
+                        <div class="chat-title" id="chatName"></div>
+                        <div class="chat-subtitle">Direct message</div>
                     </div>
-                </div>
-            </div>
-
-            <!-- DM Chat View -->
-            <div class="view-container hidden" id="dmChatView">
-                <div class="chat-header">
-                    <div class="dm-avatar online" id="dmHeaderAvatar">A</div>
-                    <span class="chat-header-title" id="dmHeaderName">Utku</span>
-                    <div class="star-icon" onclick="toggleStar(this)">☆</div>
-                </div>
-
-                <div class="messages-container" id="dmMessages">
-                    <!-- DM messages will be populated here -->
-                    <div class="typing-indicator" id="dmTyping">
-                        <div class="typing-dots">
-                            <span></span>
-                            <span></span>
-                            <span></span>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="input-area">
-                    <div class="input-container">
-                        <button class="attachment-btn" onclick="handleAttachment()">📎</button>
-                        <input 
-                            type="text" 
-                            class="message-input" 
-                            placeholder="Message"
-                            id="dmInput"
-                            onkeypress="handleKeyPress(event, 'dm')"
-                        />
-                        <button class="send-btn" onclick="sendMessage('dm')">
-                            <span>Send</span>
-                            <span>→</span>
-                        </button>
-                    </div>
-                </div>
-            </div>
-        </div>
+                </header>
+                <div class="messages" id="messages"></div>
+                <form class="message-input-container" id="messageForm">
+                    <input id="fileInput" type="file" hidden>
+                    <button type="button" class="attachment-btn" id="attachmentButton" title="Share a file">📎</button>
+                    <input class="message-input" id="messageInput" maxlength="4000" autocomplete="off" placeholder="Write a message…">
+                    <button type="submit" class="send-btn">➤</button>
+                </form>
+                <div class="upload-status hidden" id="uploadStatus"></div>
+            </section>
+        </main>
     </div>
-
-    <!-- Add Friend Modal -->
-    <div class="modal" id="addFriendModal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2 class="modal-title">Add Friend</h2>
-                <button class="modal-close" onclick="closeModal('addFriendModal')">×</button>
-            </div>
-            <div class="form-group">
-                <label class="form-label">Username</label>
-                <input type="text" class="form-input" placeholder="Enter username..." id="friendUsername">
-            </div>
-            <div class="form-group">
-                <label class="form-label">Message (Optional)</label>
-                <textarea class="form-input form-textarea" placeholder="Say something nice..." id="friendMessage"></textarea>
-            </div>
-            <div class="modal-actions">
-                <button class="btn-secondary" onclick="closeModal('addFriendModal')">Cancel</button>
-                <button class="btn-primary" onclick="sendFriendRequest()">Send Request</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Profile Modal -->
-    <div class="modal" id="profileModal">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h2 class="modal-title">Edit Profile</h2>
-                <button class="modal-close" onclick="closeModal('profileModal')">×</button>
-            </div>
-            <div class="profile-section">
-                <div class="profile-avatar-large">S</div>
-                <div class="profile-info">
-                    <h3>Star</h3>
-                    <p>Click avatar to change</p>
-                </div>
-            </div>
-            <div class="form-group">
-                <label class="form-label">Display Name</label>
-                <input type="text" class="form-input" value="Star" id="profileName">
-            </div>
-            <div class="form-group">
-                <label class="form-label">Username</label>
-                <input type="text" class="form-input" value="star#1234" id="profileUsername">
-            </div>
-            <div class="form-group">
-                <label class="form-label">Bio</label>
-                <textarea class="form-input form-textarea" placeholder="Tell us about yourself..." id="profileBio">Building cool stuff ✨</textarea>
-            </div>
-            <div class="form-group">
-                <label class="form-label">Status</label>
-                <input type="text" class="form-input" placeholder="What's on your mind?" id="profileStatus" value="Coding under the stars">
-            </div>
-            <div class="modal-actions">
-                <button class="btn-secondary" onclick="closeModal('profileModal')">Cancel</button>
-                <button class="btn-primary" onclick="saveProfile()">Save Changes</button>
-            </div>
-        </div>
-    </div>
-
-
-    <script src="chat/script.js"></script>
+    <script src="/assets/chat/script.js"></script>
 </body>
 </html>

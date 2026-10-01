@@ -1,105 +1,74 @@
- const starsContainer = document.getElementById('stars');
-        
-        // Create regular twinkling stars
-        for (let i = 0; i < 150; i++) {
-            const star = document.createElement('div');
-            star.className = 'star';
-            star.style.left = Math.random() * 100 + '%';
-            star.style.top = Math.random() * 100 + '%';
-            star.style.animationDelay = Math.random() * 4 + 's';
-            starsContainer.appendChild(star);
-        }
- 
-        // Create shooting stars
-        for (let i = 0; i < 3; i++) {
-            const shootingStar = document.createElement('div');
-            shootingStar.className = 'shooting-star';
-            shootingStar.style.left = Math.random() * 100 + '%';
-            shootingStar.style.top = Math.random() * 50 + '%';
-            shootingStar.style.animationDelay = Math.random() * 3 + 's';
-            shootingStar.style.animationDuration = (2 + Math.random() * 2) + 's';
-            starsContainer.appendChild(shootingStar);
-        }
- 
+const starsContainer = document.getElementById('stars');
+for (let i = 0; i < 100; i += 1) {
+    const star = document.createElement('div');
+    star.className = 'star';
+    star.style.left = `${Math.random() * 100}%`;
+    star.style.top = `${Math.random() * 100}%`;
+    star.style.animationDelay = `${Math.random() * 4}s`;
+    starsContainer.appendChild(star);
+}
 
+function messageFrom(result, fallback) {
+    if (typeof result?.detail === 'string') return result.detail;
+    if (Array.isArray(result?.detail)) return result.detail[0]?.msg || fallback;
+    return fallback;
+}
 
-      const API_URL = 'https://starfall.loca.lt';
-
-
-// Form submissions
-document.getElementById('loginFormElement').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const email = document.getElementById('loginEmail').value;
-    const password = document.getElementById('loginPassword').value;
-
+async function submitAuth(path, payload, button) {
+    const oldLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Please wait…';
     try {
-        const response = await fetch(`${API_URL}/login`, {
+        const response = await fetch(path, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            // AUDIT FIX: Include credentials to allow HttpOnly cookies
-            credentials: 'include',
-            body: JSON.stringify({ email, password })
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
         });
-
-        const result = await response.json();
-        if (response.ok) {
-            // AUDIT FIX: Store only non-sensitive ID, token is now in a secure cookie
-            localStorage.setItem('starfall_user_id', result.user_id);
-            alert('Login successful! Redirecting...');
-            window.location.href = 'https://starfall-beryl.vercel.app/chat'; // Redirect to chat
-        } else {
-            const errorMsg = result.detail || JSON.stringify(result) || 'Login failed :<';
-            alert(typeof errorMsg === 'string' ? errorMsg : JSON.stringify(errorMsg));
-        }
-    } catch (err) {
-        console.error("Login Error:", err);
-        alert('Network error: ' + err.message);
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(messageFrom(result, 'Something went wrong'));
+        window.location.assign('/chat');
+    } catch (error) {
+        alert(error.message);
+    } finally {
+        button.disabled = false;
+        button.textContent = oldLabel;
     }
+}
+
+document.getElementById('loginFormElement').addEventListener('submit', (event) => {
+    event.preventDefault();
+    submitAuth('/api/login', {
+        email: document.getElementById('loginEmail').value.trim(),
+        password: document.getElementById('loginPassword').value,
+    }, event.submitter);
 });
 
-document.getElementById('signupFormElement').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const username = document.getElementById('signupName').value;
-    const email = document.getElementById('signupEmail').value;
+document.getElementById('signupFormElement').addEventListener('submit', (event) => {
+    event.preventDefault();
     const password = document.getElementById('signupPassword').value;
-    const confirmPassword = document.getElementById('signupPasswordConfirm').value;
-
-    if (password !== confirmPassword) {
-        alert('Passwords do not match!');
+    if (password !== document.getElementById('signupPasswordConfirm').value) {
+        alert('Passwords do not match.');
         return;
     }
-
-    try {
-        const response = await fetch(`${API_URL}/signup`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({ username, email, password })
-        });
-        const result = await response.json();
-        if (response.ok) {
-            localStorage.setItem('starfall_user_id', result.user_id);
-            alert('Account created! Welcome to Starfall.');
-            window.location.href = 'https://starfall-beryl.vercel.app/chat';
-        } else {
-            const errorMsg = result.detail || JSON.stringify(result) || 'Signup failed :<';
-            alert(typeof errorMsg === 'string' ? errorMsg : JSON.stringify(errorMsg));
-        }
-    } catch (err) {
-        console.error("Signup Error:", err);
-        alert('Network error: ' + err.message);
-    }
+    submitAuth('/api/signup', {
+        username: document.getElementById('signupName').value.trim(),
+        email: document.getElementById('signupEmail').value.trim(),
+        password,
+    }, event.submitter);
 });
 
-// Form toggle between login and signup
-document.getElementById('showSignup').addEventListener('click', (e) => {
-    e.preventDefault();
+document.getElementById('showSignup').addEventListener('click', (event) => {
+    event.preventDefault();
     document.getElementById('loginForm').classList.remove('active');
     document.getElementById('signupForm').classList.add('active');
 });
 
-document.getElementById('showLogin').addEventListener('click', (e) => {
-    e.preventDefault();
+document.getElementById('showLogin').addEventListener('click', (event) => {
+    event.preventDefault();
     document.getElementById('signupForm').classList.remove('active');
     document.getElementById('loginForm').classList.add('active');
+});
+
+fetch('/api/me').then((response) => {
+    if (response.ok) window.location.assign('/chat');
 });

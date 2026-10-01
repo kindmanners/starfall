@@ -1,356 +1,177 @@
-let currentView = 'server';
-let currentDMUser = null;
-let socket = null;
-let reconnectAttempts = 0;
-let isReconnecting = false;
-const MAX_RECONNECT_ATTEMPTS = 10;
-const BASE_RECONNECT_DELAY = 1000;
+const state = {me: null, users: [], selected: null, socket: null, retry: 0};
+const peopleList = document.getElementById('peopleList');
+const messages = document.getElementById('messages');
+const messageInput = document.getElementById('messageInput');
+const connectionStatus = document.getElementById('connectionStatus');
 
-const userId = localStorage.getItem('starfall_user_id');
-
-if (!userId) {
-    window.location.href = '\https://starfall-beryl.vercel.app/login';
+function escapeHtml(value) {
+    const element = document.createElement('div');
+    element.textContent = value ?? '';
+    return element.innerHTML;
 }
 
-// Intercept fetch to handle 401s (token expiration)
-const originalFetch = window.fetch;
-window.fetch = async (...args) => {
-    const response = await originalFetch(...args);
+async function api(path, options = {}) {
+    const response = await fetch(path, options);
     if (response.status === 401) {
-        localStorage.removeItem('starfall_user_id');
-        alert('Session expired. Please log in again.');
-        window.location.href = 'https://starfall-beryl.vercel.app/login';
+        window.location.assign('/login');
+        throw new Error('Session expired');
     }
-    return response;
-};
+    const result = response.status === 204 ? {} : await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(result.detail || 'Request failed');
+    return result;
+}
 
-function connectWebSocket() {
-    socket = new WebSocket(`wss://starfall.loca.lt/ws/${userId}`);
+function setConnection(label, online = false) {
+    connectionStatus.textContent = label;
+    connectionStatus.classList.toggle('online', online);
+}
 
-    socket.onerror = (event) => {
-        console.error("WebSocket error:", event);
-        updateConnectionStatus('error');
-    };
+function formatSize(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
 
-    socket.onclose = (event) => {
-        console.log("WebSocket closed with code:", event.code);
-        if (event.code === 4008 || event.code === 1008) {
-            localStorage.removeItem('starfall_user_id');
-            alert('Session expired. Please log in again.');
-            window.location.href = "../login/index.html";
-        } else {
-            updateConnectionStatus('offline');
-            if (!isReconnecting && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-                scheduleReconnect();
-            }
+function renderMessage(message) {
+    if (document.querySelector(`[data-message-id="${message.id}"]`)) return;
+    const own = Number(message.sender_id) === Number(state.me.id);
+    const wrapper = document.createElement('div');
+    wrapper.className = `message ${own ? 'own' : ''}`;
+    wrapper.dataset.messageId = message.id;
+    const file = message.has_file ? `
+        <a class="file-card" href="${message.file_url}" download>
+            <span class="file-icon">↧</span>
+            <span><strong>${escapeHtml(message.file_name)}</strong><small>${formatSize(message.file_size || 0)}</small></span>
+        </a>` : '';
+    const text = message.content ? `<div class="message-bubble">${escapeHtml(message.content)}</div>` : '';
+    const time = new Date(message.created_at).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+    wrapper.innerHTML = `
+        <div class="avatar">${escapeHtml((message.sender_name || '?')[0].toUpperCase())}</div>
+        <div class="message-content">
+            <div class="message-header"><span class="username">${own ? 'You' : escapeHtml(message.sender_name)}</span><span class="timestamp">${time}</span></div>
+            ${text}${file}
+        </div>`;
+    messages.appendChild(wrapper);
+    messages.scrollTop = messages.scrollHeight;
+}
+
+async function selectUser(user) {
+    state.selected = user;
+    document.querySelectorAll('.dm-item').forEach((node) => node.classList.toggle('active', Number(node.dataset.userId) === Number(user.id)));
+    document.getElementById('welcomeView').classList.add('hidden');
+    document.getElementById('chatView').classList.remove('hidden');
+    document.getElementById('chatName').textContent = user.username;
+    document.getElementById('chatAvatar').textContent = user.username[0].toUpperCase();
+    messageInput.placeholder = `Message ${user.username}`;
+    messages.innerHTML = '<div class="loading-message">Loading conversation…</div>';
+    const result = await api(`/api/conversations/${user.id}`);
+    messages.innerHTML = '';
+    result.messages.forEach(renderMessage);
+    messageInput.focus();
+}
+
+function renderUsers() {
+    peopleList.innerHTML = '';
+    document.getElementById('peopleEmpty').classList.toggle('hidden', state.users.length > 0);
+    state.users.forEach((user) => {
+        const item = document.createElement('button');
+        item.className = 'dm-item';
+        item.dataset.userId = user.id;
+        item.innerHTML = `<span class="dm-avatar">${escapeHtml(user.username[0].toUpperCase())}</span><span class="dm-info"><span class="dm-name">${escapeHtml(user.username)}</span><span class="dm-status">Tap to chat</span></span>`;
+        item.addEventListener('click', () => selectUser(user));
+        peopleList.appendChild(item);
+    });
+}
+
+function connect() {
+    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+    const socket = new WebSocket(`${scheme}://${location.host}/ws`);
+    state.socket = socket;
+    socket.addEventListener('open', () => {
+        state.retry = 0;
+        setConnection('Online', true);
+    });
+    socket.addEventListener('message', (event) => {
+        const message = JSON.parse(event.data);
+        if (message.type === 'error') {
+            alert(message.detail);
+            return;
         }
-    };
-
-    socket.onopen = function(e) {
-        console.log("Connected to Starfall Backend! :>");
-        reconnectAttempts = 0;
-        isReconnecting = false;
-        updateConnectionStatus('online');
-    };
+        const belongsToOpenChat = state.selected && (
+            Number(message.sender_id) === Number(state.selected.id) ||
+            Number(message.recipient_id) === Number(state.selected.id)
+        );
+        if (belongsToOpenChat) renderMessage(message);
+    });
+    socket.addEventListener('close', (event) => {
+        if (event.code === 4008) {
+            window.location.assign('/login');
+            return;
+        }
+        setConnection('Reconnecting…');
+        const delay = Math.min(1000 * (2 ** state.retry), 15000);
+        state.retry += 1;
+        window.setTimeout(connect, delay);
+    });
+    socket.addEventListener('error', () => setConnection('Offline'));
 }
 
-function scheduleReconnect() {
-    isReconnecting = true;
-    const delay = Math.min(BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts), 30000);
-    reconnectAttempts++;
-
-    console.log(`Attempting reconnection ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${delay}ms`);
-    updateConnectionStatus(`reconnecting (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
-
-    setTimeout(() => {
-        connectWebSocket();
-    }, delay);
-}
-
-function updateConnectionStatus(status) {
-    let statusEl = document.getElementById('connectionStatus');
-    if (!statusEl) {
-        statusEl = document.createElement('div');
-        statusEl.id = 'connectionStatus';
-        statusEl.style.cssText = `
-            position: fixed;
-            top: 10px;
-            right: 10px;
-            padding: 8px 12px;
-            border-radius: 4px;
-            font-size: 12px;
-            z-index: 10000;
-            font-weight: bold;
-        `;
-        document.body.appendChild(statusEl);
+document.getElementById('messageForm').addEventListener('submit', (event) => {
+    event.preventDefault();
+    const content = messageInput.value.trim();
+    if (!content || !state.selected) return;
+    if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
+        alert('Still reconnecting. Try again in a moment.');
+        return;
     }
+    state.socket.send(JSON.stringify({recipient_id: Number(state.selected.id), content}));
+    messageInput.value = '';
+});
 
-    const statusColors = {
-        online: '#4CAF50',
-        offline: '#FF9800',
-        error: '#F44336',
-        reconnecting: '#2196F3'
-    };
+document.getElementById('attachmentButton').addEventListener('click', () => {
+    if (!state.selected) return;
+    document.getElementById('fileInput').click();
+});
 
-    statusEl.textContent = status.charAt(0).toUpperCase() + status.slice(1);
-    statusEl.style.backgroundColor = statusColors[status] || '#999';
-    statusEl.style.color = 'white';
+document.getElementById('fileInput').addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    if (!file || !state.selected) return;
+    const status = document.getElementById('uploadStatus');
+    status.textContent = `Uploading ${file.name}…`;
+    status.classList.remove('hidden');
+    const data = new FormData();
+    data.append('upload', file);
+    try {
+        await api(`/api/conversations/${state.selected.id}/files`, {method: 'POST', body: data});
+        status.textContent = 'File shared.';
+    } catch (error) {
+        status.textContent = error.message;
+    } finally {
+        event.target.value = '';
+        window.setTimeout(() => status.classList.add('hidden'), 2500);
+    }
+});
+
+document.getElementById('logoutButton').addEventListener('click', async () => {
+    await api('/api/logout', {method: 'POST'});
+    window.location.assign('/login');
+});
+
+for (let i = 0; i < 24; i += 1) {
+    const star = document.createElement('div');
+    star.className = 'star';
+    star.style.left = `${Math.random() * 100}%`;
+    star.style.animationDelay = `${Math.random() * 5}s`;
+    document.getElementById('starfallBg').appendChild(star);
 }
 
-connectWebSocket();
-
-
-//Incoming msg's
-socket.onmessage = function (event) {
-    const data = JSON.parse(event.data);
-    const messagesContainer = data.type === 'server' ? document.getElementById('serverMessages') : document.getElementById('dmMessages');
-    const typingIndicator = data.type === 'server' ? document.getElementById('serverTyping') : document.getElementById('dmTyping');
-
-    const now = new Date();
-    const timeString = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-    const isOwnMessage = data.sender_id === parseInt(userId);
-
-    const messageHTML = `
-        <div class="message ${isOwnMessage ? 'own' : ''}">
-            <div class="avatar">${data.sender_name ? data.sender_name.charAt(0) : 'U'}</div>
-            <div class="message-content">
-                <div class="message-header">
-                    <span class="username">${data.sender_name || 'User'}</span>
-                    <span class="timestamp">${timeString}</span>
-                </div>
-                <div class="message-bubble">
-                    ${escapeHtml(data.content)}
-                </div>
-            </div>
-        </div>
-    `;
-
-    typingIndicator.insertAdjacentHTML('beforebegin', messageHTML);
-    messagesContainer.scrollTop = messagesContainer.scrollHeight;
-};
-
-function loadDMMessages(username) {
-    const dmMessages = document.getElementById('dmMessages');
-    const typingIndicator = document.getElementById('dmTyping');
-    
-    // Clear old messages except the typing indicator
-    Array.from(dmMessages.children).forEach(child => {
-        if (child !== typingIndicator) child.remove();
-    });
-
-    const samples = {
-        'Utku': [
-            { name: 'Utku', msg: "Hey! How's the project going?", own: false },
-            { name: 'You', msg: "Pretty good! Implementing secure DMs.", own: true }
-        ],
-        'Shortie': [{ name: 'Shortie', msg: "Want to work on features together?", own: false }]
-    };
-
-    const conversation = samples[username] || [];
-    conversation.forEach(item => {
-        const msgDiv = document.createElement('div');
-        msgDiv.className = `message ${item.own ? 'own' : ''}`;
-        msgDiv.innerHTML = `
-            <div class="avatar">${item.name[0]}</div>
-            <div class="message-content">
-                <div class="message-header"><span class="username">${item.name}</span></div>
-                <div class="message-bubble">${escapeHtml(item.msg)}</div>
-            </div>
-        `;
-        dmMessages.insertBefore(msgDiv, typingIndicator);
-    });
-
-    dmMessages.scrollTop = dmMessages.scrollHeight;
-}
-
-
-        // Create starfall background effect
-        function createStarfall() {
-            const starfallBg = document.getElementById('starfallBg');
-            const numberOfStars = 30;
-
-            for (let i = 0; i < numberOfStars; i++) {
-                const star = document.createElement('div');
-                star.className = 'star';
-                star.style.left = Math.random() * 100 + '%';
-                star.style.animationDuration = (Math.random() * 3 + 2) + 's';
-                star.style.animationDelay = Math.random() * 5 + 's';
-                starfallBg.appendChild(star);
-            }
-        }
-
-        // Toggle between server and DM view
-        function toggleView() {
-            if (currentView === 'server') {
-                // Switch to DM view
-                currentView = 'dm';
-                document.getElementById('channelsView').style.display = 'none';
-                document.getElementById('dmsView').style.display = 'block';
-                document.getElementById('serverView').classList.add('hidden');
-                document.getElementById('dmHomeView').classList.remove('hidden');
-                document.getElementById('dmChatView').classList.add('hidden');
-            } else {
-                // Switch to server view
-                currentView = 'server';
-                document.getElementById('channelsView').style.display = 'block';
-                document.getElementById('dmsView').style.display = 'none';
-                document.getElementById('serverView').classList.remove('hidden');
-                document.getElementById('dmHomeView').classList.add('hidden');
-                document.getElementById('dmChatView').classList.add('hidden');
-            }
-        }
-
-        // Switch channel
-        function switchChannel(element, channelName) {
-            document.querySelectorAll('.channel-item').forEach(item => {
-                item.classList.remove('active');
-            });
-            element.classList.add('active');
-            document.getElementById('channelTitle').textContent = channelName;
-            document.querySelector('#serverInput').placeholder = `Message #${channelName}`;
-        }
-
-        // Open DM
-        function openDM(element, username, status) {
-                const dmMessages = document.getElementById('dmMessages');
-            document.querySelectorAll('.dm-item').forEach(item => {
-                item.classList.remove('active');
-            });
-            element.classList.add('active');
-            
-            currentDMUser = username;
-            document.getElementById('dmHomeView').classList.add('hidden');
-            document.getElementById('dmChatView').classList.remove('hidden');
-            document.getElementById('dmHeaderName').textContent = username;
-            document.getElementById('dmHeaderAvatar').textContent = username[0];
-            document.getElementById('dmHeaderAvatar').className = `dm-avatar ${status}`;
-            document.getElementById('dmInput').placeholder = `Message ${username}`;
-            
-            // Load DM messages (sample)
-            loadDMMessages(username);
-        }
-
-    
-        // Toggle star/favorite
-        function toggleStar(element) {
-            if (element.textContent === '☆') {
-                element.textContent = '★';
-                element.classList.add('starred');
-            } else {
-                element.textContent = '☆';
-                element.classList.remove('starred');
-            }
-        }
-
-        // Send message function
-        function sendMessage(type) {
-            const input = type === 'server' ? document.getElementById('serverInput') : document.getElementById('dmInput');
-            const message = input.value.trim();
-
-            if (message === '') return;
-
-            const messagesContainer = type === 'server' ? document.getElementById('serverMessages') : document.getElementById('dmMessages');
-            const typingIndicator = type === 'server' ? document.getElementById('serverTyping') : document.getElementById('dmTyping');
-
-            const payload = {
-                type: type,
-                content: message,
-                sender_id: parseInt(userId),
-                sender_name: "You"
-            };
-
-            if (type === 'server') {
-                payload.server_id = 1;
-            } else {
-                payload.recipient_id = currentDMUser ? parseInt(localStorage.getItem(`starfall_user_id_${currentDMUser}`)) : 2;
-            }
-
-            if (socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify(payload));
-            } else {
-                console.warn('WebSocket not connected, message will be sent when connection restored');
-                updateConnectionStatus('offline');
-            }
-
-            input.value = '';
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-
-            // Simulate typing indicator
-            setTimeout(() => {
-                typingIndicator.classList.add('active');
-                setTimeout(() => {
-                    typingIndicator.classList.remove('active');
-                }, 2000);
-            }, 500);
-        }
-
-        // Handle Enter key
-        function handleKeyPress(event, type) {
-            if (event.key === 'Enter') {
-                sendMessage(type);
-            }
-        }
-
-        // Handle attachment (placeholder)
-        function handleAttachment() {
-            alert('Attachment feature coming soon!');
-        }
-
-        // Modal functions
-        function openAddFriendModal() {
-            document.getElementById('addFriendModal').classList.add('active');
-        }
-
-        function openProfileModal() {
-            document.getElementById('profileModal').classList.add('active');
-        }
-
-        function closeModal(modalId) {
-            document.getElementById(modalId).classList.remove('active');
-        }
-
-        function sendFriendRequest() {
-            const username = document.getElementById('friendUsername').value.trim();
-            const message = document.getElementById('friendMessage').value.trim();
-            
-            if (username === '') {
-                alert('Please enter a username');
-                return;
-            }
-            
-            alert(`Friend request sent to ${username}!`);
-            closeModal('addFriendModal');
-            document.getElementById('friendUsername').value = '';
-            document.getElementById('friendMessage').value = '';
-        }
-
-        function saveProfile() {
-            const name = document.getElementById('profileName').value;
-            const username = document.getElementById('profileUsername').value;
-            const bio = document.getElementById('profileBio').value;
-            const status = document.getElementById('profileStatus').value;
-            
-            alert('Profile updated successfully!');
-            closeModal('profileModal');
-        }
-
-        // Escape HTML to prevent XSS
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-
-        // Close modals on outside click
-        window.addEventListener('click', (e) => {
-            if (e.target.classList.contains('modal')) {
-                e.target.classList.remove('active');
-            }
-        });
-
-        // Initialize
-        createStarfall();
-        window.addEventListener('load', () => {
-            const messagesContainer = document.getElementById('serverMessages');
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-        });
+(async function initialize() {
+    const [me, users] = await Promise.all([api('/api/me'), api('/api/users')]);
+    state.me = me.user;
+    state.users = users.users;
+    document.getElementById('myName').textContent = state.me.username;
+    document.getElementById('myAvatar').textContent = state.me.username[0].toUpperCase();
+    if (!state.users.length) document.getElementById('welcomeMessage').textContent = 'You’re ready. Ask your friend to sign up, then refresh this page.';
+    renderUsers();
+    connect();
+})().catch((error) => console.error(error));
