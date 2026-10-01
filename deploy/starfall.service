@@ -1,0 +1,17 @@
+[Unit]
+Description=Starfall web messenger
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/star/services/starfall
+EnvironmentFile=/home/star/.config/starfall.env
+ExecStart=/home/star/services/starfall/.venv/bin/uvicorn server.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
