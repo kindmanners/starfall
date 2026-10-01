@@ -1,201 +1,238 @@
-# starfall.
-# Copyright (C) 2026 fxllingstar on GitHub
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU Affero General Public License as
-# published by the Free Software Foundation, either version 3 of the
-# License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-# See the GNU Affero General Public License for more details.
-#
-# You should have received a copy of the GNU Affero General Public License
-# along with this program. If not, see <https://www.gnu.org/licenses/>.
-
-
-
 import logging
+import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request, Response
-from pydantic import BaseModel, EmailStr, Field
-from manager import manager
-from security import (
-    verify_password, create_token, decode_token, hash_password,
-    ACCESS_TOKEN_EXPIRE_MINUTES, REFRESH_TOKEN_EXPIRE_DAYS
-)
-from database import (
-    get_user_by_email, create_user, get_user_by_id,
-    get_server_members, save_message, is_user_in_server, are_users_connected
-)
-from migrations import ensure_pending_messages_table
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-from fastapi.middleware.cors import CORSMiddleware
-from datetime import timedelta
+from pathlib import Path
+from uuid import uuid4
 
-logger = logging.getLogger(__name__)
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, EmailStr, Field
+from psycopg2 import IntegrityError
+
+try:
+    from .database import (
+        create_user, get_conversation, get_message_file, get_user_by_email,
+        get_user_by_id, get_user_by_username, initialize_schema,
+        list_other_users, save_message,
+    )
+    from .manager import manager
+    from .security import ACCESS_TOKEN_EXPIRE_MINUTES, create_token, decode_token, hash_password, verify_password
+except ImportError:
+    from database import (
+        create_user, get_conversation, get_message_file, get_user_by_email,
+        get_user_by_id, get_user_by_username, initialize_schema,
+        list_other_users, save_message,
+    )
+    from manager import manager
+    from security import ACCESS_TOKEN_EXPIRE_MINUTES, create_token, decode_token, hash_password, verify_password
+
+
+logger = logging.getLogger("starfall")
+ROOT = Path(__file__).resolve().parents[1]
+FRONTEND = ROOT / "frontend"
+UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", ROOT / "uploads")).resolve()
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    ensure_pending_messages_table()
-    logger.info("Starfall initialized with pending message support")
+    initialize_schema()
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    logger.info("Starfall database and upload storage ready")
     yield
 
-app = FastAPI(lifespan=lifespan)
-limiter = Limiter(key_func=get_remote_address)
-app.state.limiter = limiter
 
-# CORS: credentials require explicit origins (wildcard + credentials is blocked by browsers)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://starfall-beryl.vercel.app/login", "https://starfall-beryl.vercel.app", "https://starfall-beryl.vercel.app/chat" ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="Starfall", lifespan=lifespan)
+app.mount("/assets", StaticFiles(directory=FRONTEND), name="assets")
 
-@app.on_event("startup")
-async def startup_event() -> None:
-    """Initialize database schema on startup."""
-    ensure_pending_messages_table()
-    logger.info("Starfall initialized with pending message support")
 
-# --- Request Models ---
 class UserSignup(BaseModel):
-    username: str = Field(..., min_length=3, max_length=25)
+    username: str = Field(..., min_length=3, max_length=25, pattern=r"^[A-Za-z0-9_. -]+$")
     email: EmailStr
-    password: str = Field(..., min_length=8)
+    password: str = Field(..., min_length=8, max_length=128)
+
 
 class UserLogin(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(..., min_length=1, max_length=128)
 
-# --- Auth Endpoints ---
 
-@app.post("/signup")
-@limiter.limit("3/minute")
-async def signup(request: Request, data: UserSignup, response: Response) -> dict:
-    """Register a new user account.
+def current_user(token: str | None):
+    payload = decode_token(token) if token else None
+    user_id = payload.get("user_id") if payload else None
+    user = get_user_by_id(user_id) if isinstance(user_id, int) else None
+    if not user:
+        raise HTTPException(status_code=401, detail="Please sign in")
+    return user
 
-    Args:
-        request: HTTP request object
-        data: Signup credentials
-        response: HTTP response object
 
-    Returns:
-        Dict with user_id and success status
-    """
-    if get_user_by_email(data.email):
-        raise HTTPException(status_code=400, detail="Email already registered")
-
-    hashed = hash_password(data.password)
-    user_id = create_user(data.username, data.email, hashed)
-
-    access_token = create_token({"user_id": user_id}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-
+def set_session_cookie(response: Response, user_id: int) -> None:
+    max_age = ACCESS_TOKEN_EXPIRE_MINUTES * 60
     response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,
-        secure=False,
-        samesite="lax"
+        "access_token", create_token({"user_id": user_id}), max_age=max_age,
+        httponly=True, secure=os.getenv("COOKIE_SECURE", "false").lower() == "true",
+        samesite="lax", path="/",
     )
-    return {"user_id": user_id, "status": "success"}
 
-@app.post("/login")
-@limiter.limit("5/minute")
-async def login(request: Request, data: UserLogin, response: Response) -> dict:
-    """Authenticate user and create session token.
 
-    Args:
-        request: HTTP request object
-        data: Login credentials
-        response: HTTP response object
+def public_user(row) -> dict:
+    result = dict(row)
+    if result.get("created_at"):
+        result["created_at"] = result["created_at"].isoformat()
+    if result.get("last_message_at"):
+        result["last_message_at"] = result["last_message_at"].isoformat()
+    return result
 
-    Returns:
-        Dict with user_id and success status
-    """
+
+def public_message(row) -> dict:
+    result = dict(row)
+    if result.get("created_at"):
+        result["created_at"] = result["created_at"].isoformat()
+    result["type"] = "dm"
+    result["has_file"] = bool(result.get("file_name"))
+    if result["has_file"]:
+        result["file_url"] = f"/api/files/{result['id']}"
+    return result
+
+
+@app.get("/api/health")
+async def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.post("/api/signup", status_code=201)
+async def signup(data: UserSignup, response: Response) -> dict:
+    if get_user_by_email(data.email) or get_user_by_username(data.username):
+        raise HTTPException(status_code=409, detail="Email or username is already in use")
+    try:
+        user_id = create_user(data.username, data.email, hash_password(data.password))
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail="Email or username is already in use") from None
+    set_session_cookie(response, user_id)
+    return {"user": public_user(get_user_by_id(user_id))}
+
+
+@app.post("/api/login")
+async def login(data: UserLogin, response: Response) -> dict:
     user = get_user_by_email(data.email)
     if not user or not verify_password(data.password, user["hashed_password"]):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    set_session_cookie(response, int(user["id"]))
+    return {"user": public_user(get_user_by_id(user["id"]))}
 
-    access_token = create_token({"user_id": user["id"]}, timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
 
-    response.set_cookie(
-        key="access_token",
-        value=access_token,
-        httponly=True,
-        secure=False,
-        samesite="lax"
-    )
-    return {"user_id": user["id"], "status": "success"}
+@app.post("/api/logout", status_code=204)
+async def logout(response: Response) -> None:
+    response.delete_cookie("access_token", path="/")
 
-# --- WebSocket ---
 
-@app.websocket("/ws/{user_id}")
-async def websocket_endpoint(websocket: WebSocket, user_id: int) -> None:
-    """Handle real-time messaging via WebSocket.
+@app.get("/api/me")
+async def me(request: Request) -> dict:
+    return {"user": public_user(current_user(request.cookies.get("access_token")))}
 
-    Args:
-        websocket: WebSocket connection
-        user_id: ID of the connecting user
 
-    Validates JWT token from cookies before accepting connection.
-    Syncs pending messages and handles DM/server messaging.
-    """
+@app.get("/api/users")
+async def users(request: Request) -> dict:
+    user = current_user(request.cookies.get("access_token"))
+    return {"users": [public_user(row) for row in list_other_users(user["id"])]}
+
+
+@app.get("/api/conversations/{other_id}")
+async def conversation(other_id: int, request: Request) -> dict:
+    user = current_user(request.cookies.get("access_token"))
+    other = get_user_by_id(other_id)
+    if not other or other_id == user["id"]:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "user": public_user(other),
+        "messages": [public_message(row) for row in get_conversation(user["id"], other_id)],
+    }
+
+
+@app.post("/api/conversations/{other_id}/files", status_code=201)
+async def upload_file(other_id: int, request: Request, upload: UploadFile = File(...)) -> dict:
+    user = current_user(request.cookies.get("access_token"))
+    if other_id == user["id"] or not get_user_by_id(other_id):
+        raise HTTPException(status_code=404, detail="User not found")
+    safe_name = Path(upload.filename or "attachment").name[:255]
+    file_key = uuid4().hex
+    destination = UPLOAD_DIR / file_key
+    size = 0
+    try:
+        with destination.open("wb") as output:
+            while chunk := await upload.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="File is larger than 25 MB")
+                output.write(chunk)
+        row = save_message(
+            user["id"], other_id, file_name=safe_name, file_key=file_key,
+            file_size=size, file_mime=upload.content_type or "application/octet-stream",
+        )
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    message = public_message({**dict(row), "sender_name": user["username"]})
+    await manager.send_to_users(message, user["id"], other_id)
+    return {"message": message}
+
+
+@app.get("/api/files/{message_id}")
+async def download_file(message_id: int, request: Request):
+    user = current_user(request.cookies.get("access_token"))
+    record = get_message_file(message_id, user["id"])
+    if not record:
+        raise HTTPException(status_code=404, detail="File not found")
+    path = UPLOAD_DIR / record["file_key"]
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="File is missing from storage")
+    return FileResponse(path, filename=record["file_name"], media_type=record["file_mime"])
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket) -> None:
     token = websocket.cookies.get("access_token")
-
-    if not token:
+    payload = decode_token(token) if token else None
+    user_id = payload.get("user_id") if payload else None
+    user = get_user_by_id(user_id) if isinstance(user_id, int) else None
+    if not user:
         await websocket.close(code=4008)
         return
-
-    payload = decode_token(token)
-    if not payload or payload.get("user_id") != user_id:
-        await websocket.close(code=4008)
-        return
-
+    user_id = int(user["id"])
     await manager.connect(user_id, websocket)
     try:
-        sender = get_user_by_id(user_id)
-        if not sender:
-            await websocket.close(code=4008)
-            return
-
-        sender_name = sender['username']
-
         while True:
             data = await websocket.receive_json()
-            content = data.get("content", "").strip()
-            if not content:
+            content = str(data.get("content", "")).strip()
+            recipient_id = data.get("recipient_id")
+            if not isinstance(recipient_id, int) or recipient_id == user_id or not get_user_by_id(recipient_id):
+                await websocket.send_json({"type": "error", "detail": "Invalid recipient"})
                 continue
-
-            data["sender_name"] = sender_name
-            data["sender_id"] = user_id
-
-            if data["type"] == "dm":
-                recipient_id = data.get("recipient_id")
-                if not are_users_connected(user_id, recipient_id):
-                    logger.warning(f"Unauthorized DM attempt: {user_id} -> {recipient_id}")
-                    continue
-
-                save_message(user_id, content, "dm", recipient_id=recipient_id)
-                await manager.send_personal_message(data, recipient_id)
-                await manager.send_personal_message(data, user_id)
-
-            elif data["type"] == "server":
-                server_id = data.get("server_id", 1)
-                if not is_user_in_server(user_id, server_id):
-                    logger.warning(f"Unauthorized server message: {user_id} -> server {server_id}")
-                    continue
-
-                save_message(user_id, content, "server", server_id=server_id)
-                member_ids = get_server_members(server_id)
-                await manager.broadcast_to_server(data, member_ids)
-
+            if not content or len(content) > 4000:
+                await websocket.send_json({"type": "error", "detail": "Message must be 1-4000 characters"})
+                continue
+            row = save_message(user_id, recipient_id, content)
+            message = public_message({**dict(row), "sender_name": user["username"]})
+            await manager.send_to_users(message, user_id, recipient_id)
     except WebSocketDisconnect:
-        manager.disconnect(user_id)
-    except Exception as e:
-        logger.error(f"WebSocket error for user {user_id}: {e}")
-        manager.disconnect(user_id)
+        pass
+    except Exception:
+        logger.exception("WebSocket failed for user %s", user_id)
+    finally:
+        manager.disconnect(user_id, websocket)
+
+
+@app.get("/")
+async def landing_page():
+    return FileResponse(FRONTEND / "index.html")
+
+
+@app.get("/login")
+async def login_page():
+    return FileResponse(FRONTEND / "login" / "index.html")
+
+
+@app.get("/chat")
+async def chat_page():
+    return FileResponse(FRONTEND / "chat" / "index.html")
