@@ -58,6 +58,49 @@ def create_user(username: str, email: str, password_hash: str) -> int:
         return int(cur.fetchone()["id"])
 
 
+def create_session(user_id: int, jti: str, expires_at) -> None:
+    with get_db_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO sessions (jti, user_id, expires_at)
+               VALUES (%s, %s, %s)""",
+            (jti, user_id, expires_at),
+        )
+
+
+def get_active_session(jti: str, user_id: int):
+    return _one(
+        """SELECT s.jti, s.expires_at, u.id, u.username, u.email, u.created_at
+           FROM sessions s
+           JOIN users u ON u.id = s.user_id
+           WHERE s.jti = %s AND s.user_id = %s
+             AND s.revoked_at IS NULL AND s.expires_at > CURRENT_TIMESTAMP""",
+        (jti, user_id),
+    )
+
+
+def revoke_session(jti: str, user_id: int) -> bool:
+    with get_db_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP
+               WHERE jti = %s AND user_id = %s AND revoked_at IS NULL
+               RETURNING jti""",
+            (jti, user_id),
+        )
+        return cur.fetchone() is not None
+
+
+def revoke_all_sessions(user_id: int) -> list[str]:
+    """Revoke every active device session, for example after a password change."""
+    with get_db_connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """UPDATE sessions SET revoked_at = CURRENT_TIMESTAMP
+               WHERE user_id = %s AND revoked_at IS NULL
+               RETURNING jti::text""",
+            (user_id,),
+        )
+        return [row["jti"] for row in cur.fetchall()]
+
+
 def list_other_users(user_id: int) -> list[dict[str, Any]]:
     with get_db_connection() as conn, conn.cursor() as cur:
         cur.execute(

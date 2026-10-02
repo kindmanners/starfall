@@ -57,7 +57,11 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
     return pwd_context.verify(plain_password, hashed_password)
 
-def create_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
+def create_token(
+    data: Dict[str, Any],
+    expires_delta: Optional[timedelta] = None,
+    expires_at: Optional[datetime] = None,
+) -> str:
     """Create a JWT access token.
 
     Args:
@@ -68,13 +72,13 @@ def create_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None
         Encoded JWT token
     """
     to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (
+    expire = expires_at or datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-def decode_token(token: str) -> Optional[Dict[str, Any]]:
+def decode_token(token: str, *, verify_exp: bool = True) -> Optional[Dict[str, Any]]:
     """Decode and validate a JWT token.
 
     Args:
@@ -84,6 +88,14 @@ def decode_token(token: str) -> Optional[Dict[str, Any]]:
         Decoded claims dict if valid, None if invalid
     """
     try:
-        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+            options={
+                "verify_exp": verify_exp,
+                "require": ["exp", "jti", "user_id"],
+            },
+        )
     except jwt.PyJWTError:
         return None
