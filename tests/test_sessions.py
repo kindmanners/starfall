@@ -65,6 +65,13 @@ class ConnectionManagerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class EndpointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_cookie_and_database_session_share_second_aligned_expiry(self):
+        response = Response()
+        with patch.object(main, "create_session") as create:
+            main.set_session_cookie(response, 4)
+        expires_at = create.call_args.args[2]
+        self.assertEqual(expires_at.microsecond, 0)
+
     async def test_websocket_rejects_untrusted_or_missing_origin(self):
         for origin in (None, "null", "https://evil.example", "https://wayfarer.angelfish-byzantine.ts.net:8443.evil.example"):
             websocket = FakeWebSocket(origin)

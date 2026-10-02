@@ -101,7 +101,9 @@ def current_user(token: str | None):
 
 def set_session_cookie(response: Response, user_id: int) -> None:
     max_age = ACCESS_TOKEN_EXPIRE_MINUTES * 60
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expires_at = (
+        datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    ).replace(microsecond=0)
     jti = str(uuid4())
     create_session(user_id, jti, expires_at)
     response.set_cookie(
